@@ -40,40 +40,43 @@ to_mount = (
 
 )
 
+class NotDeviceError(Exception):
+    pass
+
+class FileNotExistsError(Exception):
+    pass
+
+class NotBaserockRootfsError(Exception):
+    pass
+
 def validate_install_values(disk_dest, rootfs):
-    if not is_device(disk_dest):
-       print "ERROR: Not deploying to a device"
-       raise BaseException
     if not os.path.exists(disk_dest):
        print "ERROR: The device %s doesn't exist." % disk_dest
-       raise BaseException
+       raise FileNotExistsError
+    if not is_device(disk_dest):
+       print "ERROR: Not deploying to a device"
+       raise NotDeviceError
     if not is_baserock_rootfs(rootfs):
        print "ERROR: The rootfs %s is not a baserock rootfs." % rootfs
-       raise BaseException
+       raise NotBaserockRootfsError
 
 def is_baserock_rootfs(rootfs):
-    if os.path.isdir(os.path.join(rootfs, 'baserock')):
-        return True
-    return False
+    return os.path.isdir(os.path.join(rootfs, 'baserock'))
 
-def compute_install_command(rawdisk_path, deployment_config,
-                          rootfs, disk_dest):
-    fd, script = tempfile.mkstemp()
-    with os.fdopen(fd, 'w') as fp:
-        fp.write('#!/bin/sh\n')
-        fp.write('env ')
-        for name in deployment_config:
-            if deployment_config[name] is not None:
-                fp.write('%s="%s" ' % (name, deployment_config[name]))
-        fp.write("%s %s %s\n" % (rawdisk_path, rootfs, disk_dest))
-    install_system(script)
-    os.remove(script)
+def compute_install_command(writeext_path, deployment_config,
+                                rootfs, disk_dest):
+    env = dict(os.environ)
+    env.update(deployment_config)
+    subprocess.check_call([writeext_path, rootfs, disk_dest], env=env)
 
 def finish_installation(postinstallcmd):
     os.system("sync")
     print "Executing `%s` in 5 seconds..." % postinstallcmd
     time.sleep(5)
     os.system(postinstallcmd)
+
+def mount(partition, mount_point, fstype):
+    return subprocess.call(['mount', partition, mount_point, '-t', fstype])
 
 def do_mounts(to_mount):
     mounted = []
@@ -85,15 +88,10 @@ def do_mounts(to_mount):
             mounted.append(mount_point)
     return mounted
 
-def mount(partition, mount_point, fstype):
-    return subprocess.call(['mount', partition, mount_point, '-t', fstype])
-
 def do_unmounts(to_unmount):
     for path in reversed(to_unmount):
         print 'Unmounting %s' % path
-        try:
-            subprocess.check_call(['umount', path])
-        except subprocess.CalledProcessError as e:
+        if subprocess.call(['umount', path]) != 0:
             print 'WARNING: Failed to `umount %s`' % path
 
 def check_and_read_config(config_file):
@@ -160,17 +158,12 @@ def is_device(location):
             return False
         raise
 
-    dev_regex = re.compile("^/dev/((sd|vd|mmcblk|hd)[a-z0-9]+)$")
-    if dev_regex.match(location):
-        return True
-    return False
-
 
 try:
     print "Baserock installation script begins..."
     mounted = do_mounts(to_mount)
 
-    rawdisk_path = morphlib.extensions._get_morph_extension_filename(
+    writeext_path = morphlib.extensions._get_morph_extension_filename(
                        'rawdisk', '.write')
 
     disk_dest, rootfs, postinstallcmd = check_and_read_config(
@@ -179,7 +172,7 @@ try:
 
     deployment_config=get_deployment_config(rootfs)
 
-    compute_install_command(rawdisk_path,
+    compute_install_command(writeext_path,
              deployment_config, rootfs, disk_dest)
 
     do_unmounts(mounted)
